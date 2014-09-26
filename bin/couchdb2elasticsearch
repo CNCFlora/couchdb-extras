@@ -1,0 +1,119 @@
+#!/usr/bin/env ruby
+
+# a bot is uniq in it's arguments
+require 'base64'
+id = Base64.encode64("#{ARGV[0]}+#{ARGV[1]}").gsub("=","").gsub("\n","")
+
+# ensure no overlap
+exit 1 unless File.new("/tmp/bot_es_#{id}.lock", "a").flock(File::LOCK_EX | File::LOCK_NB) 
+
+# read args
+@couch = ARGV[0] || "http://localhost:5984";
+@es = ARGV[1] || "http://localhost:9200";
+
+require 'couch_http'
+
+def onchange(db,change)
+    if !change["doc"].has_key?("deleted") && !change["doc"].has_key?("_deleted")
+        doc = change["doc"].clone
+        doc["id"] = doc["_id"]
+        doc["rev"] = doc["_rev"]
+        doc.delete("_id")
+        doc.delete("_rev")
+        doc.delete("_attachments")
+        type = "default"
+        if doc.has_key?("metadata") && doc["metadata"].has_key?("type") 
+            type = doc["metadata"]["type"]
+        elsif doc.has_key?("type")
+            type = doc["type"]
+        end
+        response = post("#{@es}/#{db}/#{URI.encode(type)}/#{URI.encode(doc["id"])}",doc)
+        puts "post #{@es}/#{db}/#{type}/#{doc["id"]} #{response}"
+    elsif change["doc"].has_key?("_deleted") || change["doc"].has_key?("deleted")
+        doc = change["doc"].clone
+        q = URI.encode("id:\"#{doc["_id"]}\"");
+        response = delete("#{@es}/#{db}/_query?q=#{q}")
+        puts "delete #{@es}/#{db}/_query?q=#{q} #{ response }"
+    end
+end
+
+def listen_changes(db)
+    puts "listen #{db}"
+
+    system("echo 0 > /tmp/es_changes_#{db}.last_seq") #unless File.exists?("/tmp/es_changes_#{db}.last_seq") 
+
+    while true do
+        # reads last sequence
+        last_file = File.open("/tmp/es_changes_#{db}.last_seq",'r');
+        last_seq = last_file.gets.to_i;
+        last_file.close
+
+        puts "info #{db} #{last_seq}"
+
+        # get latest changes
+        changes_uri = URI("#{@couch}/#{db}/_changes?since=#{last_seq}&limit=500&feed=longpoll&include_docs=true");
+        changes = JSON.parse(Net::HTTP.get(changes_uri))['results']
+        changes.each { |change| 
+            onchange(db,change)
+            last_seq = change["seq"]
+        }
+
+        # writes last_seq
+        system("echo #{last_seq} > /tmp/es_changes_#{db}.last_seq")
+    end
+end
+
+puts "Starting..."
+
+# hold the threads
+dbs_changes = {}
+
+# listen dbs 
+Thread.new do
+    while true do
+        update = get("#{@couch}/_db_updates?feed=longpoll");
+        Thread.new do
+            ok = update["ok"]
+            db = update["db_name"]
+            type = update["type"]
+            if ok && !db.start_with?("_") && !db.end_with?("_history") then
+                if type == "created" then
+                    puts "DB created: #{db}"
+                    r = put("#{@es}/#{db}",{});
+                    puts "Creating #{@es}/#{db} = #{r}"
+                    dbs_changes[db] = Thread.new do
+                        listen_changes(db)
+                    end
+                elsif type == 'deleted'
+                    puts "DB deleted: #{db}"
+                    dbs_changes[db].stop();
+                    r = delete("#{@es}/#{db}");
+                    puts "Delete #{@es}/#{db} = #{r}"
+                    system("echo 0 > /tmp/es_changes_#{db}.last_seq")
+                end
+            end
+        end
+    end
+end
+
+# initial run
+get("#{@couch}/_all_dbs")
+     .select { |db| !db.start_with?("_") && !db.end_with?("_history")}
+     .each { |db| 
+        puts "DB existed: #{db}"
+        r=put("#{@es}/#{db}",{});
+        puts "Creating #{@es}/#{db} = #{r}"
+        dbs_changes[db] = Thread.new do
+            listen_changes(db)
+        end
+     }
+        
+
+puts "Started "
+
+while true
+    sleep 10
+end
+
+puts "Ended"
+

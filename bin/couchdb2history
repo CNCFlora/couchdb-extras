@@ -1,0 +1,118 @@
+#!/usr/bin/env ruby
+
+# a bot is uniq in it's arguments
+require 'base64'
+id = Base64.encode64("#{ARGV[0]}+#{ARGV[1]}").gsub("=","").gsub("\n","")
+
+# ensure no overlap
+exit 1 unless File.new("/tmp/h_bot_#{id}.lock", "a").flock(File::LOCK_EX | File::LOCK_NB) 
+
+require 'couch_http'
+
+def past(couch,db,id)
+     get("#{couch}/#{db}/#{id}?revs_info=true")["_revs_info"]
+        .reverse
+        .select {|r| r["status"] == 'available'}
+        .slice([1,2])
+        .each {|r|
+            doc = get("#{couch}/#{db}/#{id}?rev=#{r["rev"]}")
+            doc["_id"] = "#{doc["_id"]}:#{doc["_rev"]}"
+            doc.delete("_rev")
+            doc.delete("_attachments")
+            response = post("#{couch}/#{db}_history",doc)
+            puts "post #{couch}/#{db}/#{doc["_id"]} = #{response}"
+        }
+end
+
+def listen_changes(couch,db)
+    puts "listen #{couch}/#{db}"
+    id = Base64.encode64("#{couch}/#{db}").gsub("=","").gsub("\n","")
+    system("echo 0 > /tmp/h_changes_#{id}.last_seq") # unless File.exists?("/tmp/h_changes_#{id}.last_seq") 
+    while true do
+        # reads last sequence
+        last_file = File.open("/tmp/h_changes_#{id}.last_seq",'r');
+        last_seq = last_file.gets.to_i;
+        last_file.close
+
+        puts "info #{couch}/#{db} (#{id}) #{last_seq}"
+
+        # get latest changes
+        changes_uri = URI("#{couch}/#{db}/_changes?since=#{last_seq}&limit=500&feed=longpoll&include_docs=true");
+        changes = JSON.parse(Net::HTTP.get(changes_uri))['results']
+        changes.each { |change| 
+            if !change["doc"].has_key?("deleted") && !change["doc"].has_key?("_deleted")
+                doc = change["doc"].clone
+                doc["_id"] = "#{doc["_id"]}:#{doc["_rev"]}"
+                doc.delete("_rev")
+                doc.delete("_attachments")
+                response = post("#{couch}/#{db}_history",doc)
+                puts "post #{couch}/#{db}/#{change["id"]} = #{response}"
+                Thread.new do
+                    past(couch,db,change["id"])
+                end
+            end
+            last_seq = change["seq"]
+        }
+
+        # writes last_seq
+        system("echo #{last_seq} > /tmp/h_changes_#{id}.last_seq")
+    end
+end
+
+puts "Starting..."
+
+ARGV.each {|arg|
+    couch = arg.clone
+    puts "Server #{couch}"
+
+    # hold the threads
+    dbs_changes = {}
+
+    # listen dbs 
+    Thread.new do
+        couch = couch.clone
+        while true do
+            update = get("#{couch}/_db_updates?feed=longpoll");
+            Thread.new do
+                ok = update["ok"]
+                db = update["db_name"]
+                type = update["type"]
+                if ok && !db.start_with?("_") && !db.end_with?("_history") then
+                    if type == "created" then
+                        puts "DB created: #{db}"
+                        r = put("#{couch}/#{db}_history",{});
+                        puts "Create #{couch}/#{db}_history = #{r}"
+                        dbs_changes["#{couch}/#{db}"] = Thread.new do
+                            listen_changes(couch,db)
+                        end
+                    elsif type == 'deleted'
+                        puts "DB deleted: #{db}"
+                        dbs_changes["#{couch}/#{db}"].stop();
+                    end
+                end
+            end
+        end
+    end
+
+    # initial run
+    get("#{couch}/_all_dbs")
+         .select { |db| !db.start_with?("_") && !db.end_with?("_history")}
+         .each { |db| 
+            puts "DB existed: #{couch}/#{db}"
+            r = put("#{couch}/#{db}_history",{});
+            puts "Create #{couch}/#{db}_history = #{r}"
+            dbs_changes["#{couch}/#{db}"] = Thread.new do
+                listen_changes(couch,db)
+            end
+         }
+        
+}
+
+puts "Started"
+
+while true
+    sleep 10
+end
+
+puts "Ended"
+

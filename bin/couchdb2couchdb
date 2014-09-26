@@ -1,0 +1,20 @@
+#!/usr/bin/env ruby
+
+require 'couch_http'
+
+ARGV.each {|couch|
+    puts "Server #{couch}"
+    get("#{couch}/_all_dbs")
+        .select { |db| !db.start_with?("_") && !db.end_with?("_history")}
+        .each { |db| 
+           puts "Database #{couch}/#{db}"
+           ARGV.select {|server| server != couch}
+               .each {|other_couch|
+                   replication = {:source=>"#{couch}/#{db}",:target=>"#{other_couch}/#{db}",:continuous=>true,:create_target=>true}
+                   puts "Replication #{replication}"
+                   r = post("#{couch}/_replicator",replication)
+                   puts "#{replication} = #{r}"
+               }
+        }
+}
+

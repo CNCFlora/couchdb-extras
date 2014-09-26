@@ -1,0 +1,28 @@
+#!/bin/bash
+
+if [[ ! $1 ]]; then
+    echo "Must provide script to run."
+    exit 1
+fi
+
+if [[ ! -e "$1" ]]; then
+    echo "Provided script ($1) does not exists."
+    exit 1
+fi
+
+[[ ! $TIME_SPAN ]] && TIME_SPAN=3600
+
+while :
+do
+    sleep 1
+    echo "# Starting $1"
+    ruby $@ &
+    PID=$!
+    echo "# Started as $PID"
+    echo "# Will wait $TIME_SPAN seconds"
+    sleep $TIME_SPAN
+    echo "# Trying to kill $PID"
+    kill $PID
+    echo "# Killed $1"
+done
+
