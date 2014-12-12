@@ -64,6 +64,8 @@ def listen_changes(db)
 end
 
 puts "Starting..."
+puts "CouchDB: #{@couch}"
+puts "ES: #{@es}"
 
 # hold the threads
 dbs_changes = {}
