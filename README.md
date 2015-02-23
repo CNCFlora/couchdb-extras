@@ -43,8 +43,8 @@ Setup master-master replication on for each database for each server:
 
 Workaround some problems I have runing ruby scripts for too long, will spawn, kill and loop:
 
-    $ infinite-run your command here with arguments
-    $ TIME_SPAN=3600 infinite-run your command here with arguments # let run of an hour, default value
+    $ infinite-run "your command here with arguments"
+    $ TIME_SPAN=3600 infinite-run "your command here with arguments # let run of an hour, default value"
 
 ## License
 

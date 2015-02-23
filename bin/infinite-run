@@ -5,18 +5,23 @@ if [[ ! $1 ]]; then
     exit 1
 fi
 
-if [[ ! -e "$1" ]]; then
-    echo "Provided script ($1) does not exists."
-    exit 1
-fi
-
 [[ ! $TIME_SPAN ]] && TIME_SPAN=3600
 
-while :
+OK=true
+function ctrl_c() {
+  if [[ $PID ]]; then
+    kill $PID
+    OK=false
+  fi
+}
+
+trap ctrl_c INT
+
+while $OK  :
 do
     sleep 1
     echo "# Starting $1"
-    ruby $@ &
+    $@ &
     PID=$!
     echo "# Started as $PID"
     echo "# Will wait $TIME_SPAN seconds"
@@ -25,4 +30,5 @@ do
     kill $PID
     echo "# Killed $1"
 done
+
 
